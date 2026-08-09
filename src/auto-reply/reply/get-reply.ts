@@ -13,6 +13,7 @@ import {
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../../agents/prepared-model-catalog-owner.js";
+import type { PreparedReplyDispatchRuntime } from "../../agents/prepared-model-runtime.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
@@ -76,7 +77,6 @@ import {
   sanitizePendingFinalDeliveryText,
 } from "./pending-final-delivery.js";
 import { attachProgressNarratorToReplyOptions } from "./progress-narrator.js";
-import { usesPublishedReplyRuntime } from "./reply-config-runtime-mode.js";
 import { createReplyTimingTracker } from "./reply-timing-tracker.js";
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
 import { mergeSkillFilters } from "./skill-filter.js";
@@ -121,10 +121,6 @@ const mediaUnderstandingApplyRuntimeLoader = createLazyImportLoader(
 const linkUnderstandingApplyRuntimeLoader = createLazyImportLoader(
   () => import("../../link-understanding/apply.runtime.js"),
 );
-const preparedModelCatalogRuntimeLoader = createLazyImportLoader(
-  () => import("../../agents/prepared-model-catalog.js"),
-);
-
 const replyResolverTimingLog = createSubsystemLogger("auto-reply/reply-resolver-timing");
 const commandsCoreRuntimeLoader = createLazyImportLoader(
   () => import("./commands-core.runtime.js"),
@@ -148,10 +144,6 @@ function loadLinkUnderstandingApplyRuntime() {
 
 function loadCommandsCoreRuntime() {
   return commandsCoreRuntimeLoader.load();
-}
-
-export async function prewarmReplyModelCatalogRuntime(): Promise<void> {
-  await preparedModelCatalogRuntimeLoader.load();
 }
 
 function hasLinkCandidate(ctx: MsgContext): boolean {
@@ -228,14 +220,17 @@ export async function getReplyFromConfig(
   ctx: MsgContext,
   opts?: GetReplyOptions,
   configOverride?: OpenClawConfig,
+  preparedDispatchRuntime?: PreparedReplyDispatchRuntime,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const isFastTestEnv = isFastTestRuntimeEnv();
-  let cfg = resolveGetReplyConfig({
-    getRuntimeConfig,
-    isFastTestEnv,
-    configOverride,
-  });
-  const usePublishedModelRuntime = usesPublishedReplyRuntime(cfg);
+  const preparedReplyDispatchRuntime = configOverride ? undefined : preparedDispatchRuntime;
+  const cfg =
+    preparedReplyDispatchRuntime?.config ??
+    resolveGetReplyConfig({
+      getRuntimeConfig,
+      isFastTestEnv,
+      configOverride,
+    });
   // Profiler spans stay inert unless diagnostics enable `profiler` or
   // `reply.profiler`, so normal replies do not pay per-stage Date.now/array
   // bookkeeping while we can still split resolver costs on demand.
@@ -269,27 +264,19 @@ export async function getReplyFromConfig(
     };
   });
   const agentSessionKey = initialAgentScope.agentSessionKey;
-  let agentId = initialAgentScope.agentId;
-  let preparedAgentDir: string | undefined;
-  let preparedWorkspaceDir: string | undefined;
-  let preparedModelCatalog: ModelCatalogSnapshot | undefined;
-  if (usePublishedModelRuntime && !isFastTestEnv) {
-    // Gateway turns consume one committed model-runtime generation. Later config/secret
-    // publications must not mix a new global config with an older prepared catalog owner.
-    const owner = await (
-      await preparedModelCatalogRuntimeLoader.load()
-    ).loadResolvedPublishedModelCatalogOwner({ agentId });
-    // The published generation may refresh config, directories, and catalog together, but the
-    // admitted session must never cross agent ownership while doing so.
-    if (!publishedModelCatalogOwnerMatchesAgent(owner, agentId)) {
-      throw new Error(`reply model catalog owner changed from ${agentId} to ${owner.agentId}`);
-    }
-    cfg = owner.config;
-    agentId = owner.agentId;
-    preparedAgentDir = owner.agentDir;
-    preparedWorkspaceDir = owner.workspaceDir;
-    preparedModelCatalog = owner.modelCatalog;
+  const agentId = initialAgentScope.agentId;
+  if (
+    preparedReplyDispatchRuntime &&
+    !publishedModelCatalogOwnerMatchesAgent(preparedReplyDispatchRuntime, agentId)
+  ) {
+    throw new Error(
+      `reply model catalog owner changed from ${agentId} to ${preparedReplyDispatchRuntime.agentId}`,
+    );
   }
+  const preparedAgentDir = preparedReplyDispatchRuntime?.agentDir;
+  const preparedWorkspaceDir = preparedReplyDispatchRuntime?.workspaceDir;
+  const preparedModelCatalog: ModelCatalogSnapshot | undefined =
+    preparedReplyDispatchRuntime?.modelCatalog;
   const traceAttributes = resolverTiming.measureSync("reply.resolve_trace_context", () => ({
     surface: normalizeOptionalString(finalized.Surface ?? finalized.Provider) ?? "unknown",
     hasSessionKey: Boolean(agentSessionKey),

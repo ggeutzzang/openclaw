@@ -586,6 +586,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                 },
               },
               replyConfig,
+              params.configOverride ? undefined : state.preparedReplyDispatchRuntime,
             ),
           ),
         trackDispatchLifecycleWork,

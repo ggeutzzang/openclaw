@@ -1,4 +1,5 @@
 import type { QueueMode } from "../../../packages/gateway-protocol/src/schema/logs-chat.js";
+import type { PreparedReplyDispatchRuntime } from "../../agents/prepared-model-runtime.js";
 import type { SessionToolOverrides } from "../../config/sessions/types.js";
 // Shared get-reply type contracts for command, directive, and runtime layers.
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -59,4 +60,5 @@ export type InternalGetReplyFromConfig = (
   ctx: MsgContext,
   opts?: InternalGetReplyOptions,
   configOverride?: OpenClawConfig,
+  preparedReplyDispatchRuntime?: PreparedReplyDispatchRuntime,
 ) => Promise<ReplyPayload | ReplyPayload[] | undefined>;
